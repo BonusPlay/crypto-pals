@@ -1,0 +1,1 @@
+This repo holds my solutions to [Cryptopals](https://cryptopals.com/) challenges. They serve as a learning ground for both rust and crypto, so don't expect to see any high quality code over here.

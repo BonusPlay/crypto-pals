@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 hex = "0.3.2"
 bit-vec = "0.6.1"
+base64 = "0.10.1"

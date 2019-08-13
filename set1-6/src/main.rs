@@ -1,24 +1,8 @@
-use std::fs::File;
-use std::io::{BufReader, BufRead};
 use bit_vec::BitVec;
+use std::fs;
 
-// https://stackoverflow.com/a/49806368
-macro_rules! skip_fail {
-    ($res:expr) => {
-        match $res {
-            Ok(val) => val,
-            Err(e) => {
-                continue;
-            }
-        }
-    };
-}
-
-fn load_file(file: &str) -> Vec<String> {
-	let file = File::open(file).unwrap();
-	let buf = BufReader::new(file).lines();
-	buf.map(|l| l.unwrap().to_ascii_lowercase()).collect()
-}
+// http://www.data-compression.com/english.html
+const TABLE: [f64;27] = [0.0651738, 0.0124248, 0.0217339, 0.0349835, 0.1041442, 0.0197881, 0.0158610, 0.0492888, 0.0558094, 0.0009033, 0.0050529, 0.0331490, 0.0202124, 0.0564513, 0.0596302, 0.0137645, 0.0008606, 0.0497563, 0.0515760, 0.0729357, 0.0225134, 0.0082903, 0.0171272, 0.0013692, 0.0145984, 0.0007836, 0.1918182];
 
 pub fn get_hammering_dist(a: &[u8], b: &[u8]) -> u32 {
 	let mut counter = 0;
@@ -36,19 +20,21 @@ pub fn get_hammering_dist(a: &[u8], b: &[u8]) -> u32 {
 	return counter;
 }
 
-// finds key size
-fn step1(msg: &String) -> u32 {
+fn find_key_size(msg: &Vec<u8>) -> u32 {
 	// key size, normalized hammering dist
 	let mut best: (u32, f32) = (0, 999_f32);
 
 	for i in 2..40 {
 		let mut results: Vec<f32> = [].to_vec();
 
-		for _ in 0..3 {
-			results.push(get_hammering_dist(msg[0..i].as_bytes(), msg[i..i + i + 1].as_bytes()) as f32 / i as f32);
+		for j in 0..4 {
+			let p1 = &msg[i * (j * 2) .. i * (j * 2 + 1)];
+			let p2 = &msg[i * (j * 2 + 1)..i * (j * 2 + 2)];
+
+			results.push(get_hammering_dist(p1, p2) as f32);
 		}
 
-		let norm = results.iter().sum::<f32>() / (results.len() as f32);
+		let norm = results.iter().sum::<f32>() / (i * 4) as f32;
 
 		if norm < best.1 || i == 2 {
 			best = (i as u32, norm);
@@ -59,13 +45,12 @@ fn step1(msg: &String) -> u32 {
 }
 
 // transposes blocks
-fn step2(msg: &String, key_size: u32) -> Vec<Vec<u8>> {
+fn step2(msg: &Vec<u8>, key_size: u32) -> Vec<Vec<u8>> {
 	let mut parts: Vec<Vec<u8>> = [].to_vec();
 	for i in 0..key_size {
-		parts.push(msg.as_bytes()
-			.iter()
+		parts.push(msg.iter()
 			.enumerate()
-			.filter(|&(j, _)| (j as u32 + i) % key_size == 0)
+			.filter(|&(j, _)| j as u32 % key_size == i)
 			.map(|(_, e)| *e)
 			.collect());
 	}
@@ -74,39 +59,45 @@ fn step2(msg: &String, key_size: u32) -> Vec<Vec<u8>> {
 
 fn step3(part: Vec<u8>) -> String {
 	// key char, rating
-	let mut best_pick = (' ', 0, String::new());
+	let mut best_pick = (' ', 0_f64, String::new());
 
-	for j in ' ' as u8..'~' as u8 {
+	for j in 0..255 {
 		let out = &part.iter().map(|&c| c ^ j).collect();
 
 		let r = rate(out);
 		if r > best_pick.1 {
-			println!("New best pick: {:?} ({})", out, r);
 			best_pick = (j as char, r, String::from_utf8(out.to_owned()).unwrap());
 		}
 	}
 
+	println!("{:?}", best_pick);
 	return best_pick.2
 }
 
 // rates text based on letter occurrence number
-fn rate(text: &Vec<u8>) -> u32 {
+fn rate(text: &Vec<u8>) -> f64 {
 	return text.iter()
 		.map(|&e| e as char)
 		.map(|e| e.to_ascii_lowercase())
-		.filter(|&e| "ETAOINSHRDLU".to_ascii_lowercase().contains(e))
-		.count() as u32;
+		.filter(|&e| e.is_ascii_alphabetic() || e == ' ')
+		.map(|e| match e {
+			' ' => TABLE[26],
+			n => TABLE[n as usize - 97 as usize]
+		})
+		.sum();
 }
 
 fn main() {
-	let input = load_file("input.txt");
-	let msg = input.join("");
+	let input = fs::read_to_string("input.txt").unwrap();
+	let msg = base64::decode(&input.replace("\n", "")).unwrap();
 
-	let key_size = step1(&msg);
+	let key_size = find_key_size(&msg);
 	println!("key size: {:?}", key_size);
 
 	let parts = step2(&msg, key_size);
-	println!("parts: {:?}", parts);
+	for part in &parts {
+		println!("part: {:?}", part);
+	}
 
 	let mut data: Vec<Vec<u8>> = [].to_vec();
 	for part in parts {
@@ -115,22 +106,22 @@ fn main() {
 
 	// reorder blocks
 	let mut fin: Vec<u8> = [].to_vec();
-	let mut iter = data[0].iter();
-	while let Some(x) = iter.next() {
-		match x {
-			x => println!("{:?}", x)
+
+	for i in 0..data[0].len() {
+		for j in 0..data.len() {
+			if i* key_size as usize + key_size as usize > data[j].len() {
+				fin.extend_from_slice(&data[j][i..]);
+			} else {
+				fin.extend_from_slice(&data[j][i * key_size as usize..(i + 1) * key_size as usize]);
+			}
 		}
 	}
-//	while let Some(x) = data[0].iter().next() {
-//		println!("{:?}", x);
-//	}
-//	println!("{:?}", String::from_utf8(data));
+
+	println!("{:?}", String::from_utf8(fin).unwrap());
 }
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-
 	#[test]
 	fn hammering() {
 		assert_eq!(37, super::get_hammering_dist("this is a test".as_bytes(), "wokka wokka!!!".as_bytes()))
